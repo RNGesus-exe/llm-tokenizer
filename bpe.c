@@ -200,7 +200,7 @@ void apply_best_merge(byte_pair_t best_merge){
     uint64_t new_bytes_stream_idx = 0;
     for(uint64_t i=0; i<bytes_stream_size-1; i++){
         if(bytes_stream[current_bytes_stream][i] == best_merge.byte_1 && bytes_stream[current_bytes_stream][i+1] == best_merge.byte_2){
-            bytes_stream[!current_bytes_stream][new_bytes_stream_idx] = vocab_table_size;
+            bytes_stream[!current_bytes_stream][new_bytes_stream_idx] = vocab_table_size - 1;
             new_bytes_stream_idx++;
             i++;
             continue;
@@ -214,9 +214,7 @@ void apply_best_merge(byte_pair_t best_merge){
     bytes_stream_size = new_bytes_stream_idx + 1;
 }
 
-int main() {
-    clock_t start_time, end_time;
-    double cpu_time_used;
+int32_t train_bpe(){
 
     // Load the dataset in bytes
     int32_t result = load_dataset();
@@ -226,53 +224,42 @@ int main() {
     }
     printf("Loaded %lu bytes from %s\n", bytes_stream_size, FILE_PATH);
     
-    start_time = clock();
-
-for(uint16_t i=0; i<MERGE_ITERATIONS; i++){
-    printf("Merge iteration %u\n", i+1);
-
-    // Write the bytes to a file
-    // write_bytes(i+1);
-
-    // Get byte pairs from the bytes
-    create_merge_table();
-
-    // Sort the merge table
-    sort_merge_table();
-
-    // Write the sorted merge table
-    // write_merge_table(i+1);
-
-    // Get the max merge frequency
-    byte_pair_t best_merge = get_max_merge_frequency();
-
-    // Print the max merge frequency
-    printf("Max merge frequency: %u %u %u\n", best_merge.byte_1, best_merge.byte_2, best_merge.freq);
-
-    // Update the vocabulary table
-    update_vocab_table(best_merge);
+    for(uint16_t i=0; i<MERGE_ITERATIONS; i++){
+        printf("Merge iteration %u\n", i+1);
     
-    // Write the vocabulary table
-    // write_vocab_table(i+1);
-
-    // Apply the best merge to the bytes stream
-    apply_best_merge(best_merge);
-
-    // Reset the merge table
-    merge_table_size = 0;
-
-    printf("Bytes stream size: %lu\n", bytes_stream_size);
-}
-
-    end_time = clock();
-    // Calculate the elapsed time in seconds
-    cpu_time_used = ((double) (end_time - start_time)) / CLOCKS_PER_SEC;
-
-    printf("Start time (ticks): %ld\n", (long)start_time);
-    printf("End time (ticks): %ld\n", (long)end_time);
-    printf("Execution time was %f seconds\n", cpu_time_used);
-
-
+        // Write the bytes to a file
+        // write_bytes(i+1);
+    
+        // Get byte pairs from the bytes
+        create_merge_table();
+    
+        // Sort the merge table
+        sort_merge_table();
+    
+        // Write the sorted merge table
+        // write_merge_table(i+1);
+    
+        // Get the max merge frequency
+        byte_pair_t best_merge = get_max_merge_frequency();
+    
+        // Print the max merge frequency
+        printf("Max merge frequency: %u %u %u\n", best_merge.byte_1, best_merge.byte_2, best_merge.freq);
+    
+        // Update the vocabulary table
+        update_vocab_table(best_merge);
+        
+        // Write the vocabulary table
+        // write_vocab_table(i+1);
+    
+        // Apply the best merge to the bytes stream
+        apply_best_merge(best_merge);
+    
+        // Reset the merge table
+        merge_table_size = 0;
+    
+        printf("Bytes stream size: %lu\n", bytes_stream_size);
+    }
+    
     // Write the final bytes to a file
     write_bytes(MERGE_ITERATIONS+1);
 
@@ -288,5 +275,28 @@ for(uint16_t i=0; i<MERGE_ITERATIONS; i++){
         free(bytes_stream[1]);
         bytes_stream[1] = NULL;
     }
+
+    return SUCCESS;
+}
+
+int main() {
+    clock_t start_time, end_time;
+    double cpu_time_used;
+
+    start_time = clock();
+
+    int32_t result = train_bpe();
+    if (result != SUCCESS) {
+        printf("Error training BPE: %d\n", result);
+        return result;
+    }
+
+    end_time = clock();
+    // Calculate the elapsed time in seconds
+    cpu_time_used = ((double) (end_time - start_time)) / CLOCKS_PER_SEC;
+
+    printf("Start time (ticks): %ld\n", (long)start_time);
+    printf("End time (ticks): %ld\n", (long)end_time);
+    printf("Execution time was %f seconds\n", cpu_time_used);
     return SUCCESS;
 }
