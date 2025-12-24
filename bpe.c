@@ -6,12 +6,25 @@
 #define SUCCESS 0
 #define FILE_OPEN_ERROR -1
 #define MEMORY_ALLOCATION_ERROR -2
+#define FILE_WRITE_ERROR -3
 
 #define FILE_PATH "temp/example"
+#define VOCAB_PATH "temp/vocab"
+#define DECODE_PATH "temp/decode"
 #define MAX_PATH_LENGTH 4096
 #define MAX_TABLE_SIZE 50000
 #define MERGE_ITERATIONS 20
 #define VOCAB_SIZE 256 + MERGE_ITERATIONS
+#define MAX_QUEUE_SIZE VOCAB_SIZE
+
+// This queue is used for decoding
+typedef struct {
+    uint16_t buffer[MAX_QUEUE_SIZE];
+    uint16_t head;
+    uint16_t tail;
+} queue_t;
+
+queue_t decode_queue = {.head = 0, .tail = 0};
 
 typedef struct {
     uint16_t byte_1;
@@ -24,6 +37,7 @@ typedef struct {
     uint16_t byte_2;
 } vocab_item_t;
 
+// Training variables
 byte_pair_t merge_table[MAX_TABLE_SIZE] = {0};
 uint16_t merge_table_size = 0;
 uint16_t *bytes_stream[2] = {NULL, NULL}; // We will use it alternatively for the original bytes stream and the new bytes stream
@@ -31,6 +45,33 @@ uint64_t bytes_stream_size = 0;
 uint8_t current_bytes_stream = 0;
 vocab_item_t vocab_table[VOCAB_SIZE] = {0};
 uint16_t vocab_table_size = 256;  // 0-255 are the ASCII characters
+
+// Decoding variables
+uint16_t *decode_stream[2] = {NULL, NULL}; // First buffer is encoded, second buffer is decoded
+uint64_t decode_stream_size = 0;
+uint8_t current_decode_stream = 0;
+
+uint16_t dequeue_byte(){
+    if(decode_queue.head == decode_queue.tail){
+        printf("ERROR: Decode queue is empty\n");
+        exit(1);
+    }
+    uint16_t byte = decode_queue.buffer[decode_queue.head];
+    decode_queue.head = (decode_queue.head + 1) % MAX_QUEUE_SIZE;
+    return byte;
+}
+
+void enqueue_byte(uint16_t byte){
+    if((decode_queue.tail + 1) % MAX_QUEUE_SIZE == decode_queue.head){
+        printf("ERROR: Decode queue is full\n");
+        exit(1);
+    }
+    decode_queue.buffer[decode_queue.tail] = byte;
+    decode_queue.tail = (decode_queue.tail + 1) % MAX_QUEUE_SIZE;
+
+    // Uncomment for debugging
+    // printf("Enqueued byte: %u\n", byte);
+}
 
 uint64_t load_dataset() {
     // Open the file
@@ -81,10 +122,15 @@ uint64_t load_dataset() {
     return SUCCESS;
 }
 
-int32_t write_bytes(uint16_t iteration) {
+int32_t write_bytes(uint16_t iteration, uint8_t is_binary) {
     // Create the path
     char path[MAX_PATH_LENGTH];
-    snprintf(path, MAX_PATH_LENGTH, "%s.bin%u", FILE_PATH, iteration);
+    if(is_binary){
+        snprintf(path, MAX_PATH_LENGTH, "%s.bin%u", FILE_PATH, iteration);
+    }
+    else{
+        snprintf(path, MAX_PATH_LENGTH, "%s.txt%u", FILE_PATH, iteration);
+    }
     
     // Open the file
     FILE *file = fopen(path, "wb");
@@ -93,11 +139,20 @@ int32_t write_bytes(uint16_t iteration) {
         return FILE_OPEN_ERROR;
     }
     // Write the bytes to the file
-    // fwrite(bytes_stream[current_bytes_stream], sizeof(uint16_t), bytes_stream_size, file);
-    for (uint64_t i = 0; i < bytes_stream_size; i++) {
-        fprintf(file, "%u ", bytes_stream[current_bytes_stream][i]);
+    if(is_binary){
+        size_t writ_bytes = fwrite(bytes_stream[current_bytes_stream], sizeof(uint16_t), bytes_stream_size, file);
+        if(writ_bytes != bytes_stream_size){
+            printf("ERROR: Failed to write bytes to file: %ld\n", writ_bytes);
+            fclose(file);
+            return FILE_WRITE_ERROR;
+        }
     }
-    fprintf(file, "\n");
+    else{
+        for (uint64_t i = 0; i < bytes_stream_size; i++) {
+            fprintf(file, "%u ", bytes_stream[current_bytes_stream][i]);
+        }
+        fprintf(file, "\n");
+    }
     fclose(file);
     return SUCCESS;
 }
@@ -228,7 +283,7 @@ int32_t train_bpe(){
         printf("Merge iteration %u\n", i+1);
     
         // Write the bytes to a file
-        // write_bytes(i+1);
+        // write_bytes(i+1, 0);
     
         // Get byte pairs from the bytes
         create_merge_table();
@@ -261,7 +316,8 @@ int32_t train_bpe(){
     }
     
     // Write the final bytes to a file
-    write_bytes(MERGE_ITERATIONS+1);
+    write_bytes(MERGE_ITERATIONS+1, 1);
+    write_bytes(MERGE_ITERATIONS+1, 0);
 
     // Write the final vocabulary 
     write_vocab_table(MERGE_ITERATIONS+1);
@@ -279,17 +335,150 @@ int32_t train_bpe(){
     return SUCCESS;
 }
 
+int32_t load_vocab_table(){
+    // Open the file
+    FILE *file = fopen(VOCAB_PATH ".txt", "rb");
+    if (file == NULL) {
+        perror("Could not open file"); 
+        return FILE_OPEN_ERROR;
+    }
+    
+    // Read the file into the vocab_table
+    uint16_t token_id, byte_1, byte_2;
+    for(uint16_t i=0; i< 256;i++){
+        fscanf(file, "%hu %hu", &token_id, &byte_1);
+        vocab_table[token_id].byte_1 = vocab_table[token_id].byte_2 = byte_1;
+    }
+    for(uint16_t i = 256; i < VOCAB_SIZE; i++){
+        fscanf(file, "%hu %hu %hu\n", &token_id, &byte_1, &byte_2);
+        vocab_table[token_id].byte_1 = byte_1;
+        vocab_table[token_id].byte_2 = byte_2;
+    }
+    fclose(file);
+    vocab_table_size = VOCAB_SIZE;
+    return SUCCESS;
+}
+
+int32_t load_decoding_stream(){
+    // Open the file
+    FILE *file = fopen(DECODE_PATH ".txt", "rb");
+    if (file == NULL) {
+        perror("Could not open file"); 
+        return FILE_OPEN_ERROR;
+    }
+
+    // Get the file size
+    fseek(file, 0, SEEK_END);
+    uint64_t file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    // NOTE: We will use half of the file size for the decode stream
+    file_size /= 2;
+
+    // Allocate decode stream
+    decode_stream[0] = malloc(file_size * sizeof(uint16_t));
+    decode_stream[1] = malloc(file_size * sizeof(uint16_t)); // Will be used after the first iteration
+    if (!decode_stream[0]) {
+        perror("Could not allocate decode_stream_0");
+        return MEMORY_ALLOCATION_ERROR;
+    }
+
+    // Read the file into the decode stream
+    fread(decode_stream[0], sizeof(uint16_t), file_size, file);
+    fclose(file);
+
+    decode_stream_size = file_size;
+    return SUCCESS;
+}
+
+void decode_byte_recursively(uint16_t byte){
+    
+    // Base case: ASCII character
+    if(byte < 256){
+        enqueue_byte(byte);
+        return;
+    }
+
+    // Find the byte pair in the vocabulary table
+    if(byte >= vocab_table_size){
+        printf("ERROR: Byte not found in vocabulary table: %u\n", byte);
+        exit(1);
+    }
+    vocab_item_t item = vocab_table[byte];
+    decode_byte_recursively(item.byte_1);
+    decode_byte_recursively(item.byte_2);
+    return;
+}
+
+void decode_decoding_stream(){
+    // Decode the decoding stream
+    uint16_t new_decode_stream_idx = 0;
+    for(uint64_t i=0; i<decode_stream_size; i++){
+        // Decode the byte
+        decode_byte_recursively(decode_stream[current_decode_stream][i]);
+        // Copy the decoded bytes to the decoding stream
+        while(decode_queue.head != decode_queue.tail){
+            decode_stream[!current_decode_stream][new_decode_stream_idx] = dequeue_byte();
+            new_decode_stream_idx++;
+        }
+    }
+}
+
+int32_t write_decoded_stream(){
+    // Create the path
+    char path[MAX_PATH_LENGTH];
+    snprintf(path, MAX_PATH_LENGTH, "%s.decoded", DECODE_PATH);
+
+    // Open the file
+    FILE *file = fopen(path, "w");
+    if (file == NULL) {
+        perror("Could not open file"); 
+        return FILE_OPEN_ERROR;
+    }
+
+    // Write the decoded bytes to the file
+    for(uint64_t i=0; i<decode_stream_size; i++){
+        fprintf(file, "%c", (char)decode_stream[!current_decode_stream][i]);
+    }
+    fclose(file);
+    return SUCCESS;
+}
+
+void decode(){
+    // Load the vocabulary table
+    load_vocab_table();
+    printf("Loaded %u tokens from %s\n", vocab_table_size, VOCAB_PATH);
+
+    // write_vocab_table(0);
+    // printf("Written %u tokens to %s\n", vocab_table_size, VOCAB_PATH);
+    
+    // Load the bytes stream
+    load_decoding_stream();
+    printf("Loaded %lu bytes from %s\n", decode_stream_size, DECODE_PATH);
+
+    for(uint64_t i=0; i<decode_stream_size; i++){
+        printf("%u ", decode_stream[current_decode_stream][i]);
+    }
+    printf("\n");
+
+    // Decode bytes stream
+    decode_decoding_stream();
+
+    // Write the decoded bytes to a file
+    write_decoded_stream();
+}
+
 int main() {
     clock_t start_time, end_time;
     double cpu_time_used;
 
     start_time = clock();
 
-    int32_t result = train_bpe();
-    if (result != SUCCESS) {
-        printf("Error training BPE: %d\n", result);
-        return result;
-    }
+    // TRAIN
+    train_bpe();
+
+    // DECODE
+    // decode();
 
     end_time = clock();
     // Calculate the elapsed time in seconds
