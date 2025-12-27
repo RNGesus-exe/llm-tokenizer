@@ -1,7 +1,7 @@
 MAIN_APP := tokenizer
 
 CC := gcc
-CFLAGS := -Wall -Wextra -Werror -O0
+CFLAGS := -g -Wall -Wextra -Werror -O0
 
 SRC = bpe
 

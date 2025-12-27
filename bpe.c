@@ -10,12 +10,14 @@
 
 #define FILE_PATH "temp/example"
 #define VOCAB_PATH "temp/vocab"
-#define DECODE_PATH "temp/decode"
+#define DECODE_PATH "temp/example"
 #define MAX_PATH_LENGTH 4096
 #define MAX_TABLE_SIZE 50000
 #define MERGE_ITERATIONS 20
-#define VOCAB_SIZE 256 + MERGE_ITERATIONS
-#define MAX_QUEUE_SIZE VOCAB_SIZE
+#define INCREASE_FACTOR 4
+#define VOCAB_SIZE (256 + MERGE_ITERATIONS)
+#define MAX_QUEUE_SIZE (VOCAB_SIZE * 2) // Worst case double the vocab tokens are in queue
+#define MAX_STACK_SIZE VOCAB_SIZE
 
 // This queue is used for decoding
 typedef struct {
@@ -25,6 +27,13 @@ typedef struct {
 } queue_t;
 
 queue_t decode_queue = {.head = 0, .tail = 0};
+
+typedef struct{
+    uint16_t buffer[MAX_STACK_SIZE];
+    uint16_t head;
+} stack_t;
+
+stack_t decode_stack = {.head = 0};
 
 typedef struct {
     uint16_t byte_1;
@@ -48,6 +57,7 @@ uint16_t vocab_table_size = 256;  // 0-255 are the ASCII characters
 
 // Decoding variables
 uint16_t *decode_stream[2] = {NULL, NULL}; // First buffer is encoded, second buffer is decoded
+uint64_t encode_stream_size = 0;
 uint64_t decode_stream_size = 0;
 uint8_t current_decode_stream = 0;
 
@@ -70,7 +80,28 @@ void enqueue_byte(uint16_t byte){
     decode_queue.tail = (decode_queue.tail + 1) % MAX_QUEUE_SIZE;
 
     // Uncomment for debugging
-    // printf("Enqueued byte: %u\n", byte);
+    // printf("Enqueued byte: %u(%c)\n", byte, (char)byte);
+}
+
+void push_byte(uint16_t byte){
+    if(decode_stack.head + 1 >= MAX_STACK_SIZE){
+        printf("ERROR: Stack is full\n");
+        exit(1);
+    }
+    decode_stack.buffer[decode_stack.head] = byte;
+    decode_stack.head++;
+
+    // Uncomment for debugging
+    // printf("Pushed byte: %u(%c)\n", byte, (char)byte);
+}
+
+uint16_t pop_byte(){
+    if(decode_stack.head <= 0){
+        printf("ERROR: Stack is empty\n");
+        exit(1);
+    }
+    uint16_t byte = decode_stack.buffer[--decode_stack.head];
+    return byte;
 }
 
 uint64_t load_dataset() {
@@ -250,12 +281,12 @@ void update_vocab_table(byte_pair_t max_merge){
     vocab_table[vocab_table_size++] = item;
 }
 
-void apply_best_merge(byte_pair_t best_merge){
+void apply_best_merge(byte_pair_t best_merge, uint16_t encoded_byte){
     
     uint64_t new_bytes_stream_idx = 0;
     for(uint64_t i=0; i<bytes_stream_size-1; i++){
         if(bytes_stream[current_bytes_stream][i] == best_merge.byte_1 && bytes_stream[current_bytes_stream][i+1] == best_merge.byte_2){
-            bytes_stream[!current_bytes_stream][new_bytes_stream_idx] = vocab_table_size - 1;
+            bytes_stream[!current_bytes_stream][new_bytes_stream_idx] = encoded_byte;
             new_bytes_stream_idx++;
             i++;
             continue;
@@ -307,7 +338,7 @@ int32_t train_bpe(){
         // write_vocab_table(i+1);
     
         // Apply the best merge to the bytes stream
-        apply_best_merge(best_merge);
+        apply_best_merge(best_merge, vocab_table_size - 1);
     
         // Reset the merge table
         merge_table_size = 0;
@@ -361,7 +392,7 @@ int32_t load_vocab_table(){
 
 int32_t load_decoding_stream(){
     // Open the file
-    FILE *file = fopen(DECODE_PATH ".txt", "rb");
+    FILE *file = fopen(DECODE_PATH ".bin777", "rb");
     if (file == NULL) {
         perror("Could not open file"); 
         return FILE_OPEN_ERROR;
@@ -387,12 +418,22 @@ int32_t load_decoding_stream(){
     fread(decode_stream[0], sizeof(uint16_t), file_size, file);
     fclose(file);
 
-    decode_stream_size = file_size;
+    encode_stream_size = decode_stream_size = file_size;
     return SUCCESS;
 }
 
-void decode_byte_recursively(uint16_t byte){
-    
+void print_decode_stack(){
+    printf("STACK ELEMENTS: ");
+    for(int i =0; i<decode_stack.head;i++){
+        printf("%u(%c), ",decode_stack.buffer[i], decode_stack.buffer[i]);
+    }
+    printf("\n");
+}
+
+void decode_byte_recursively(){
+    // print_decode_stack();
+    uint16_t byte = pop_byte();
+
     // Base case: ASCII character
     if(byte < 256){
         enqueue_byte(byte);
@@ -405,23 +446,71 @@ void decode_byte_recursively(uint16_t byte){
         exit(1);
     }
     vocab_item_t item = vocab_table[byte];
-    decode_byte_recursively(item.byte_1);
-    decode_byte_recursively(item.byte_2);
+    push_byte(item.byte_1);
+    decode_byte_recursively();
+    push_byte(item.byte_2);
+    decode_byte_recursively();
     return;
+}
+
+void print_decode_queue(){
+    uint16_t queu_itr = decode_queue.head;
+    printf("Queue Head: %d, Queue Tail: %d, Queue Elements: ", decode_queue.head, decode_queue.tail);
+    while(queu_itr != decode_queue.tail){
+        printf("%u(%c)", decode_queue.buffer[queu_itr],(char)decode_queue.buffer[queu_itr]);
+        queu_itr = (queu_itr+1)%MAX_QUEUE_SIZE;
+    }
+    printf("\n");
+}
+
+// May GOD have mercy on me for using this approach
+void expand_decoding_stream(){
+    size_t new_size = decode_stream_size * INCREASE_FACTOR;
+    if (new_size <= decode_stream_size) {
+        printf("ERROR: Decode buffer size overflow\n");
+        exit(1);
+    }
+
+    uint16_t *tmp = realloc(decode_stream[!current_decode_stream], new_size * sizeof(uint16_t));
+
+    if(!tmp){
+        perror("ERROR: Realloc decode buffer failed");
+        exit(1);
+    }
+
+    printf("Expanded Decoding Stream from %lu to %lu\n", decode_stream_size, new_size);
+
+    decode_stream[!current_decode_stream] = tmp;
+    decode_stream_size = new_size;
 }
 
 void decode_decoding_stream(){
     // Decode the decoding stream
-    uint16_t new_decode_stream_idx = 0;
-    for(uint64_t i=0; i<decode_stream_size; i++){
+    uint64_t new_decode_stream_idx = 0;
+    for(uint64_t i=0; i<encode_stream_size; i++){
+        // Reset Queue and Stack for each new byte
+        decode_queue.head = decode_queue.tail = 0;
+        decode_stack.head = 0;
+        
         // Decode the byte
-        decode_byte_recursively(decode_stream[current_decode_stream][i]);
+        push_byte(decode_stream[current_decode_stream][i]);
+        decode_byte_recursively();
+        
         // Copy the decoded bytes to the decoding stream
+        // print_decode_queue();
         while(decode_queue.head != decode_queue.tail){
+            
+            // Reallocate decode queue and make it bigger
+            if(new_decode_stream_idx >= decode_stream_size){
+                expand_decoding_stream();
+            }
+
             decode_stream[!current_decode_stream][new_decode_stream_idx] = dequeue_byte();
             new_decode_stream_idx++;
         }
     }
+    decode_stream_size = new_decode_stream_idx;
+    current_decode_stream = !current_decode_stream;
 }
 
 int32_t write_decoded_stream(){
@@ -438,10 +527,92 @@ int32_t write_decoded_stream(){
 
     // Write the decoded bytes to the file
     for(uint64_t i=0; i<decode_stream_size; i++){
-        fprintf(file, "%c", (char)decode_stream[!current_decode_stream][i]);
+        fprintf(file, "%c", (char)decode_stream[current_decode_stream][i]);
     }
     fclose(file);
     return SUCCESS;
+}
+
+/**
+ * @return 1 if a byte pair was matched with the vocab table
+ * @return 0 if no byte pair was matched with the vocab table
+ */
+uint8_t check_merge_in_vocab(byte_pair_t *best_match){
+    // Iterate over the merges table
+    for(uint64_t i = 0; i < merge_table_size; i++){
+        // Grab a byte pair from merge table
+        byte_pair_t byte_pair = merge_table[i];
+        // Iterate over the vocab table and check if any vocab entry matches this byte pair
+        for(uint16_t j = 256; j < vocab_table_size; j++){
+            if(vocab_table[j].byte_1 == byte_pair.byte_1 && vocab_table[j].byte_2 == byte_pair.byte_2){
+                best_match->byte_1 = vocab_table[j].byte_1;
+                best_match->byte_2 = vocab_table[j].byte_2;
+                best_match->freq = j; // We are using frequency as token_id
+                return 1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+void encode_bytes_stream(){
+    byte_pair_t best_match;
+    uint64_t encode_itr = 0;
+    uint64_t org_byte_stream_sz = 0;
+    while(1){
+        printf("Encoding iteration %lu\n", encode_itr+1);
+
+        // Find all possible merges in the bytes stream
+        create_merge_table();    
+        printf("Found %u merges in bytes stream\n",merge_table_size);
+        // write_merge_table(encode_itr+1);
+    
+        // Check if any one of the possible merges exists in the vocab table
+        if(check_merge_in_vocab(&best_match)){
+            printf("Found best merge %u(%c) %u(%c)\n", 
+                best_match.byte_1, (char)best_match.byte_1, 
+                best_match.byte_2, (char)best_match.byte_2);
+            
+            // Apply it on the bytes stream
+            org_byte_stream_sz = bytes_stream_size;
+            apply_best_merge(best_match, best_match.freq);
+            printf("Original Size = %lu, New Size = %lu\n", org_byte_stream_sz, bytes_stream_size);
+            
+            // Reset merge table after applying merge
+            merge_table_size = 0;
+
+            // Continue to encode more bytes until no match is found
+            encode_itr++;
+            continue;
+        }
+
+        // Exit encoding if no pair was found
+        break;   
+    }
+}
+
+void encode(){
+    // Load the vocabulary table
+    load_vocab_table();
+    printf("Loaded %u tokens from %s\n", vocab_table_size, VOCAB_PATH);
+
+    // Load the bytes stream
+    load_dataset();
+    printf("Loaded %lu bytes from %s\n", bytes_stream_size, FILE_PATH);
+
+    // Original text
+    write_bytes(555, 0);
+
+    // Encode the bytes stream
+    encode_bytes_stream();
+    printf("Encoded %lu bytes to %s\n", bytes_stream_size, FILE_PATH);
+    
+    // Readable encoded text
+    write_bytes(666, 0);
+
+    // Binary encoded text
+    write_bytes(777, 1);
 }
 
 void decode(){
@@ -452,20 +623,21 @@ void decode(){
     // write_vocab_table(0);
     // printf("Written %u tokens to %s\n", vocab_table_size, VOCAB_PATH);
     
-    // Load the bytes stream
+    // Load the encoded bytes stream
     load_decoding_stream();
-    printf("Loaded %lu bytes from %s\n", decode_stream_size, DECODE_PATH);
+    printf("Loaded %lu bytes from %s\n", encode_stream_size, DECODE_PATH);
 
-    for(uint64_t i=0; i<decode_stream_size; i++){
-        printf("%u ", decode_stream[current_decode_stream][i]);
-    }
-    printf("\n");
+    // for(uint64_t i=0; i<encode_stream_size; i++){
+    //     printf("%u ", decode_stream[current_decode_stream][i]);
+    // }
+    // printf("\n");
 
     // Decode bytes stream
     decode_decoding_stream();
 
     // Write the decoded bytes to a file
     write_decoded_stream();
+    printf("Decoded & Wrote %lu bytes to %s.decoded\n", decode_stream_size,FILE_PATH);
 }
 
 int main() {
@@ -475,10 +647,15 @@ int main() {
     start_time = clock();
 
     // TRAIN
-    train_bpe();
+    // train_bpe();
+
+    // ENCODE
+    printf("\n=======ENCODER=======\n");
+    encode();
 
     // DECODE
-    // decode();
+    printf("\n=======DECODER=======\n");
+    decode();
 
     end_time = clock();
     // Calculate the elapsed time in seconds
