@@ -12,7 +12,7 @@
 #define VOCAB_PATH "temp/vocab"
 #define DECODE_PATH "temp/example"
 #define MAX_PATH_LENGTH 4096
-#define MAX_TABLE_SIZE 50000
+#define MAX_TABLE_SIZE 50000  // We assume our merges won't exceed 50000 tokens on our dataset
 #define MERGE_ITERATIONS 20
 #define INCREASE_FACTOR 4
 #define VOCAB_SIZE (256 + MERGE_ITERATIONS)
