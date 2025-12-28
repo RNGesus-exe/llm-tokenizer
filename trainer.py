@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -18,24 +19,44 @@ dropout = 0.0
 
 torch.manual_seed(1337)
 
-# wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
-with open('dataset/input.txt', 'r', encoding='utf-8') as f:
-    text = f.read()
+# Tokenizer Parameters
+vocab_size = 276 # 256 ASCII + 20 MERGE ITERATIONS
+token_dtype = np.uint16
 
-# here are all the unique characters that occur in this text
-chars = sorted(list(set(text)))
-vocab_size = len(chars)
-# create a mapping from characters to integers
-stoi = { ch:i for i,ch in enumerate(chars) }
-itos = { i:ch for i,ch in enumerate(chars) }
-encode = lambda s: [stoi[c] for c in s] # encoder: take a string, output a list of integers
-decode = lambda l: ''.join([itos[i] for i in l]) # decoder: take a list of integers, output a string
+# read binary token file
+tokens = np.fromfile("dataset/input.encoded", dtype=token_dtype)
 
-# Train and test splits
-data = torch.tensor(encode(text), dtype=torch.long)
+# sanity checks incase any token is outside of our vocabulary domain
+assert tokens.min() >= 0
+assert tokens.max() < vocab_size, (
+    f"Token out of range: max={tokens.max()}, vocab_size={vocab_size}"
+)
+
+# convert to torch
+data = torch.tensor(tokens, dtype=torch.long)
+
 n = int(0.9*len(data)) # first 90% will be train, rest val
 train_data = data[:n]
 val_data = data[n:]
+
+# Only for debugging decoder
+def save_tokens_debug(tokens, path, ascii_threshold=256):
+    with open(path, "w") as f:
+        for t in tokens:
+            if t < ascii_threshold:
+                c = chr(t)
+                if c == '\n':
+                    f.write("\\n ")
+                elif c == '\t':
+                    f.write("\\t ")
+                elif c == '\r':
+                    f.write("\\r ")
+                elif 32 <= t <= 126:
+                    f.write(f"{c} ")
+                else:
+                    f.write(f"<{t}> ")
+            else:
+                f.write(f"<{t}> ")
 
 # data loading
 def get_batch(split):
@@ -209,4 +230,17 @@ for iter in range(max_iters):
 
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
-print(decode(m.generate(context, max_new_tokens=2000)[0].tolist()))
+generated_tokens = m.generate(context, max_new_tokens=2000)[0]
+
+# Move to CPU + numpy
+generated_tokens = generated_tokens.cpu().numpy().astype(np.uint16)
+
+# write to binary file
+generated_tokens.tofile("temp/generation.bin")
+
+print(f"Wrote {len(generated_tokens)} tokens to generation.bin")
+
+save_tokens_debug(
+    generated_tokens,
+    "temp/generation.tokens.txt"
+)

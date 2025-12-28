@@ -10,7 +10,7 @@
 
 #define FILE_PATH "temp/example"
 #define VOCAB_PATH "temp/vocab"
-#define DECODE_PATH "temp/example"
+#define DECODE_PATH "temp/generation"
 #define MAX_PATH_LENGTH 4096
 #define MAX_TABLE_SIZE 50000  // We assume our merges won't exceed 50000 tokens on our dataset
 #define MERGE_ITERATIONS 20
@@ -392,7 +392,7 @@ int32_t load_vocab_table(){
 
 int32_t load_decoding_stream(){
     // Open the file
-    FILE *file = fopen(DECODE_PATH ".bin777", "rb");
+    FILE *file = fopen(DECODE_PATH ".bin", "rb");
     if (file == NULL) {
         perror("Could not open file"); 
         return FILE_OPEN_ERROR;
@@ -650,8 +650,8 @@ int main() {
     // train_bpe();
 
     // ENCODE
-    printf("\n=======ENCODER=======\n");
-    encode();
+    // printf("\n=======ENCODER=======\n");
+    // encode();
 
     // DECODE
     printf("\n=======DECODER=======\n");
